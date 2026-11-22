@@ -16,7 +16,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from src.pipeline import PipelineOutput, run_pipeline, save_visual_report
+from src.pipeline import (
+    PipelineOutput,
+    calibrate_reference_model,
+    run_pipeline,
+    save_visual_report,
+)
 
 VALID_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 NORMAL_FOLDERS = {"aprovado", "good", "normal", "ok"}
@@ -65,21 +70,24 @@ def evaluate_dataset(
     backend: str = "scratch",
     reports_dir: str | Path | None = None,
     save_one_per_category: bool = True,
+    train_good_dir: str | Path | None = None,
 ) -> EvaluationSummary:
     """Executa o pipeline em todo o dataset e calcula as metricas de classificacao."""
     samples = collect_dataset_samples(data_dir)
+    ref_model = None
+    if train_good_dir is not None and Path(train_good_dir).exists():
+        ref_model = calibrate_reference_model(train_good_dir, backend=backend)
 
     tp = fp = tn = fn = 0
     times_ms: list[float] = []
-    cat_stats: dict[str, list[int]] = {}  # category -> [correct, total]
+    cat_stats: dict[str, list[int]] = {}
     saved_cats: set[str] = set()
 
     for img_path, category, true_label in samples:
-        output: PipelineOutput = run_pipeline(img_path, backend=backend)
+        output: PipelineOutput = run_pipeline(img_path, backend=backend, reference_model=ref_model)
         pred_label = output.classification.status
         times_ms.append(output.elapsed_ms)
 
-        # Positivo = REPROVADO (comprimido defeituoso detectado)
         if true_label == "REPROVADO" and pred_label == "REPROVADO":
             tp += 1
         elif true_label == "APROVADO" and pred_label == "REPROVADO":
@@ -132,14 +140,19 @@ def evaluate_dataset(
     )
 
 
-def save_metrics_chart(summaries: list[EvaluationSummary], save_path: str | Path) -> Path:
+def save_metrics_chart(
+    summaries: list[EvaluationSummary],
+    save_path: str | Path,
+    title_prefix: str = "",
+) -> Path:
     """Gera imagem com matriz de confusao e comparativo de metricas."""
     n = len(summaries)
-    fig, axes = plt.subplots(1, n + 1, figsize=(5.5 * (n + 1), 4.6))
+    fig, axes = plt.subplots(1, n + 1, figsize=(5.5 * (n + 1), 4.8))
+    if title_prefix:
+        fig.suptitle(title_prefix, fontsize=13, fontweight="bold")
     if n == 1:
         axes = [axes[0], axes[1]]
 
-    # Matrizes de confusao
     for idx, s in enumerate(summaries):
         cm = np.array([[s.tn, s.fp], [s.fn, s.tp]])
         ax = axes[idx]
@@ -158,7 +171,6 @@ def save_metrics_chart(summaries: list[EvaluationSummary], save_path: str | Path
                 ax.text(j, i, str(cm[i, j]), ha="center", va="center", color=color, fontsize=13, fontweight="bold")
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    # Grafico de barras das metricas
     ax_bar = axes[-1]
     metric_names = ["Acuracia", "Precisao", "Recall", "F1-Score"]
     x = np.arange(len(metric_names))
@@ -170,8 +182,14 @@ def save_metrics_chart(summaries: list[EvaluationSummary], save_path: str | Path
         bars = ax_bar.bar(x + offset, vals, width, label=f"{s.backend.upper()} ({s.avg_time_ms:.1f} ms/img)")
         for bar in bars:
             h = bar.get_height()
-            ax_bar.annotate(f"{h:.1f}%", xy=(bar.get_x() + bar.get_width() / 2, h),
-                            xytext=(0, 3), textcoords="offset points", ha="center", fontsize=8.5)
+            ax_bar.annotate(
+                f"{h:.1f}%",
+                xy=(bar.get_x() + bar.get_width() / 2, h),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                fontsize=8.5,
+            )
 
     ax_bar.set_ylim(0, 115)
     ax_bar.set_xticks(x)

@@ -1,3 +1,1 @@
-"""
-Pacote principal do sistema de inspeção visual de comprimidos por PDI.
-"""
+"""Pacote principal do sistema de inspecao visual de comprimidos e capsulas por PDI."""

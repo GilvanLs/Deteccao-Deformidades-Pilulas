@@ -1,11 +1,12 @@
 """
-Ponto de entrada CLI do sistema de inspecao visual de comprimidos.
+Ponto de entrada CLI do sistema de inspecao visual de comprimidos e capsulas
+utilizando as bases reais MVTec AD (`pill` e `capsule` - foersben/mvtec-ad).
 
 Exemplos de uso:
-    python main.py
-    python main.py --mode scratch
-    python main.py --mode opencv --data-dir data/synthetic
-    python main.py --image data/synthetic/rachadura/rachadura_01.png --mode scratch
+    python main.py                                    # Avalia MVTec AD pill + capsule (compare)
+    python main.py --dataset pill --mode compare      # Apenas MVTec AD pill
+    python main.py --dataset capsule --mode compare   # Apenas MVTec AD capsule
+    python main.py --image data/mvtec/pill/test/crack/000.png --train-good data/mvtec/pill/train/good
 """
 
 from __future__ import annotations
@@ -13,13 +14,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.dataset_generator import generate_synthetic_dataset
+from src.download_mvtec import download_mvtec_category
 from src.metrics import EvaluationSummary, evaluate_dataset, save_metrics_chart
-from src.pipeline import run_pipeline, save_visual_report
+from src.pipeline import calibrate_reference_model, run_pipeline, save_visual_report
 
 
-def _print_summary(s: EvaluationSummary) -> None:
-    print(f"\n=== RESULTADOS ({s.backend.upper()}) ===")
+def _print_summary(dataset_name: str, s: EvaluationSummary) -> None:
+    print(f"\n=== RESULTADOS [{dataset_name.upper()}] ({s.backend.upper()}) ===")
     print(f"Total de imagens : {s.total_images}")
     print(f"Matriz Confusao  : TP={s.tp}  FP={s.fp}  TN={s.tn}  FN={s.fn}")
     print(f"Acuracia         : {s.accuracy * 100:.2f}%")
@@ -29,52 +30,89 @@ def _print_summary(s: EvaluationSummary) -> None:
     print(f"Tempo medio/img  : {s.avg_time_ms:.2f} ms")
     print("Taxa por categoria:")
     for cat, stats in s.per_category.items():
-        print(f"  - {cat:<14}: {int(stats['acertos'])}/{int(stats['total'])} ({stats['taxa'] * 100:.1f}%)")
+        print(f"  - {cat:<16}: {int(stats['acertos'])}/{int(stats['total'])} ({stats['taxa'] * 100:.1f}%)")
+
+
+def _run_dataset_eval(
+    name: str,
+    test_dir: Path,
+    train_good_dir: Path | None,
+    backends: list[str],
+    out_dir: Path,
+) -> None:
+    ds_out = out_dir / name
+    summaries: list[EvaluationSummary] = []
+
+    for b in backends:
+        summary = evaluate_dataset(
+            data_dir=test_dir,
+            backend=b,
+            reports_dir=ds_out / "etapas",
+            save_one_per_category=True,
+            train_good_dir=train_good_dir,
+        )
+        _print_summary(name, summary)
+        summaries.append(summary)
+
+    chart_path = save_metrics_chart(
+        summaries,
+        ds_out / "metricas_comparacao.png",
+        title_prefix=f"Avaliacao - {name.upper()}",
+    )
+    print(f"Grafico salvo em : {chart_path}")
+    print(f"Etapas salvas em : {ds_out / 'etapas'}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sistema de Inspecao Visual de Comprimidos por PDI"
+        description="Sistema de Inspecao Visual de Comprimidos e Capsulas (MVTec AD)"
+    )
+    parser.add_argument(
+        "--dataset",
+        choices=["mvtec-all", "pill", "capsule", "custom"],
+        default="mvtec-all",
+        help="Base de dados a avaliar (padrao: mvtec-all = MVTec AD pill + capsule).",
     )
     parser.add_argument(
         "--mode",
         choices=["scratch", "opencv", "compare"],
         default="compare",
-        help="Backend de processamento: 'scratch' (do zero com NumPy), 'opencv', ou 'compare' (ambos).",
+        help="Backend: 'scratch' (do zero com NumPy), 'opencv', ou 'compare' (ambos).",
     )
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="data/synthetic",
-        help="Diretorio contendo subpastas por classe (ex.: aprovado/, rachadura/, mancha/, ...).",
+        default=None,
+        help="Diretorio customizado de teste (quando --dataset custom).",
+    )
+    parser.add_argument(
+        "--train-good",
+        type=str,
+        default=None,
+        help="Diretorio opcional de imagens normais para calibracao (ex.: data/mvtec/pill/train/good).",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
         default="results",
-        help="Diretorio onde serao salvos os relatorios visuais e graficos de metricas.",
-    )
-    parser.add_argument(
-        "--generate-dataset",
-        action="store_true",
-        help="Forca a regeneracao da base sintetica em --data-dir.",
+        help="Diretorio de saida para graficos e paineis visuais.",
     )
     parser.add_argument(
         "--image",
         type=str,
         default=None,
-        help="Caminho para inspecionar uma unica imagem e gerar seu relatorio visual.",
+        help="Inspeciona uma unica imagem e salva seu relatorio visual.",
     )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    backends = ["scratch", "opencv"] if args.mode == "compare" else [args.mode]
 
-    # Modo imagem unica
     if args.image:
-        backends = ["scratch", "opencv"] if args.mode == "compare" else [args.mode]
         for b in backends:
-            res = run_pipeline(args.image, backend=b)
+            ref = calibrate_reference_model(args.train_good, backend=b) if args.train_good else None
+            res = run_pipeline(args.image, backend=b, reference_model=ref)
             report_path = out_dir / f"inspecao_{b}_{Path(args.image).stem}.png"
             save_visual_report(res, report_path)
             print(
@@ -84,28 +122,29 @@ def main() -> None:
             )
         return
 
-    # Modo avaliacao em lote
-    data_dir = Path(args.data_dir)
-    if args.generate_dataset or not data_dir.exists():
-        print(f"Gerando base sintetica em '{data_dir}'...")
-        generate_synthetic_dataset(data_dir)
-
-    backends = ["scratch", "opencv"] if args.mode == "compare" else [args.mode]
-    summaries: list[EvaluationSummary] = []
-
-    for b in backends:
-        summary = evaluate_dataset(
-            data_dir=data_dir,
-            backend=b,
-            reports_dir=out_dir / "etapas",
-            save_one_per_category=True,
+    if args.dataset in ("mvtec-all", "pill", "capsule"):
+        cats = ("pill", "capsule") if args.dataset == "mvtec-all" else (args.dataset,)
+        for cat in cats:
+            cat_root = Path("data/mvtec") / cat
+            if not (cat_root / "test").exists():
+                download_mvtec_category(cat, output_root="data/mvtec")
+            _run_dataset_eval(
+                name=f"mvtec_{cat}",
+                test_dir=cat_root / "test",
+                train_good_dir=cat_root / "train" / "good",
+                backends=backends,
+                out_dir=out_dir,
+            )
+    elif args.dataset == "custom":
+        if not args.data_dir:
+            raise ValueError("Informe --data-dir ao usar --dataset custom.")
+        _run_dataset_eval(
+            name="custom",
+            test_dir=Path(args.data_dir),
+            train_good_dir=Path(args.train_good) if args.train_good else None,
+            backends=backends,
+            out_dir=out_dir,
         )
-        _print_summary(summary)
-        summaries.append(summary)
-
-    chart_path = save_metrics_chart(summaries, out_dir / "metricas_comparacao.png")
-    print(f"\nGrafico de metricas salvo em: {chart_path}")
-    print(f"Imagens intermediarias salvas em: {out_dir / 'etapas'}")
 
 
 if __name__ == "__main__":

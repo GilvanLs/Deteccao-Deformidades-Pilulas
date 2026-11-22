@@ -58,3 +58,8 @@ def opening_cv(mask: np.ndarray, ksize: int = 5) -> np.ndarray:
 def closing_cv(mask: np.ndarray, ksize: int = 5) -> np.ndarray:
     kernel = np.ones((ksize, ksize), dtype=np.uint8)
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
+def blackhat_cv(gray: np.ndarray, ksize: int = 11) -> np.ndarray:
+    kernel = np.ones((ksize, ksize), dtype=np.uint8)
+    return cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)

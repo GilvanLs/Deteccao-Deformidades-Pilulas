@@ -1,0 +1,16 @@
+# Dados baixados automaticamente via `python -m src.download_mvtec`
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,12 +1,10 @@
 """
 Implementacoes do zero (apenas NumPy) de algoritmos classicos de
-Processamento Digital de Imagens (PDI).
-
-Inclui:
+Processamento Digital de Imagens (PDI):
 - Conversoes de espaco de cor (BGR -> RGB, RGB -> Cinza, RGB -> HSV)
 - Convolucao 2D, Filtro Gaussiano e Filtro da Mediana
 - Limiarizacao automatica de Otsu
-- Gradientes de Sobel e Detector de Bordas de Canny (NMS + Histerese)
+- Gradientes de Sobel e Detector de Bordas de Canny (NMS vetorizado + Histerese)
 - Morfologia Matematica binaria (Erosao, Dilatacao, Abertura, Fechamento)
 """
 
@@ -36,9 +34,7 @@ def rgb_to_gray(image_rgb: np.ndarray) -> np.ndarray:
 def rgb_to_hsv_scratch(image_rgb: np.ndarray) -> np.ndarray:
     """
     Converte imagem RGB (uint8) para HSV na escala OpenCV:
-    - H (Matiz): [0, 179]
-    - S (Saturacao): [0, 255]
-    - V (Valor/Brilho): [0, 255]
+    - H (Matiz): [0, 179], S (Saturacao): [0, 255], V (Brilho): [0, 255]
     """
     rgb = image_rgb.astype(np.float64) / 255.0
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
@@ -63,11 +59,9 @@ def rgb_to_hsv_scratch(image_rgb: np.ndarray) -> np.ndarray:
     valid_v = c_max > 1e-12
     s[valid_v] = delta[valid_v] / c_max[valid_v]
 
-    v = c_max
-
     h_u8 = np.clip(np.round(h / 2.0), 0, 179).astype(np.uint8)
     s_u8 = np.clip(np.round(s * 255.0), 0, 255).astype(np.uint8)
-    v_u8 = np.clip(np.round(v * 255.0), 0, 255).astype(np.uint8)
+    v_u8 = np.clip(np.round(c_max * 255.0), 0, 255).astype(np.uint8)
     return np.stack([h_u8, s_u8, v_u8], axis=-1)
 
 
@@ -84,10 +78,7 @@ def gaussian_kernel(ksize: int = 5, sigma: float = 1.0) -> np.ndarray:
 
 
 def convolve2d_scratch(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """
-    Aplica convolucao 2D em imagem 2D (cinza) ou 3D (canais independentes)
-    utilizando preenchimento por reflexao (reflect padding) e janelas vetorizadas.
-    """
+    """Aplica convolucao 2D vetorizada com reflect padding."""
     kh, kw = kernel.shape
     pad_h, pad_w = kh // 2, kw // 2
 
@@ -108,10 +99,7 @@ def gaussian_blur_scratch(image: np.ndarray, ksize: int = 5, sigma: float = 1.2)
 
 
 def median_filter_scratch(image: np.ndarray, ksize: int = 3) -> np.ndarray:
-    """
-    Filtro da mediana implementado do zero com NumPy para remocao de ruido impulsivo
-    preservando bordas.
-    """
+    """Filtro da mediana implementado do zero com NumPy."""
     if ksize % 2 == 0 or ksize < 1:
         raise ValueError("ksize deve ser um inteiro impar positivo.")
     pad = ksize // 2
@@ -126,13 +114,9 @@ def median_filter_scratch(image: np.ndarray, ksize: int = 3) -> np.ndarray:
 
 
 def otsu_threshold_scratch(gray: np.ndarray) -> tuple[int, np.ndarray]:
-    """
-    Calcula o limiar otimo de Otsu maximizando a variancia entre classes
-    e retorna (limiar, mascara_binaria_0_255).
-    """
+    """Calcula o limiar otimo de Otsu maximizando a variancia entre classes."""
     hist = np.bincount(gray.ravel(), minlength=256).astype(np.float64)
-    total = gray.size
-    prob = hist / total
+    prob = hist / gray.size
 
     omega = np.cumsum(prob)
     mu = np.cumsum(prob * np.arange(256))
@@ -149,16 +133,13 @@ def otsu_threshold_scratch(gray: np.ndarray) -> tuple[int, np.ndarray]:
 
 
 def sobel_gradients_scratch(gray: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Calcula magnitude e direcao (em radianos) do gradiente usando operadores de Sobel."""
+    """Calcula magnitude e direcao do gradiente usando operadores de Sobel."""
     kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float64)
     ky = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float64)
 
     gx = convolve2d_scratch(gray, kx)
     gy = convolve2d_scratch(gray, ky)
-
-    magnitude = np.hypot(gx, gy)
-    angle = np.arctan2(gy, gx)
-    return magnitude, angle
+    return np.hypot(gx, gy), np.arctan2(gy, gx)
 
 
 def _non_max_suppression(magnitude: np.ndarray, angle: np.ndarray) -> np.ndarray:
@@ -169,19 +150,15 @@ def _non_max_suppression(magnitude: np.ndarray, angle: np.ndarray) -> np.ndarray
     center = magnitude[1:-1, 1:-1]
     d = deg[1:-1, 1:-1]
 
-    # 0 graus (horizontal)
     m0 = ((0 <= d) & (d < 22.5)) | ((157.5 <= d) & (d <= 180.0))
     ok0 = m0 & (center >= magnitude[1:-1, 2:]) & (center >= magnitude[1:-1, :-2])
 
-    # 45 graus (diagonal /)
     m45 = (22.5 <= d) & (d < 67.5)
     ok45 = m45 & (center >= magnitude[2:, :-2]) & (center >= magnitude[:-2, 2:])
 
-    # 90 graus (vertical)
     m90 = (67.5 <= d) & (d < 112.5)
     ok90 = m90 & (center >= magnitude[2:, 1:-1]) & (center >= magnitude[:-2, 1:-1])
 
-    # 135 graus (diagonal \)
     m135 = (112.5 <= d) & (d < 157.5)
     ok135 = m135 & (center >= magnitude[:-2, :-2]) & (center >= magnitude[2:, 2:])
 
@@ -218,7 +195,6 @@ def _hysteresis_thresholding(
             if 0 <= ny < h and 0 <= nx < w and weak[ny, nx] and edges[ny, nx] == 0:
                 edges[ny, nx] = 255
                 queue.append((ny, nx))
-
     return edges
 
 
@@ -228,13 +204,7 @@ def canny_scratch(
     low_ratio: float = 0.08,
     high_ratio: float = 0.22,
 ) -> np.ndarray:
-    """
-    Detector de bordas de Canny completo implementado do zero:
-    1. Suavizacao Gaussiana
-    2. Gradiente de Sobel
-    3. Supressao Nao-Maxima (NMS)
-    4. Limiarizacao dupla + Histerese
-    """
+    """Detector de bordas de Canny completo implementado do zero."""
     smooth = gaussian_blur_scratch(gray, ksize=5, sigma=sigma)
     magnitude, angle = sobel_gradients_scratch(smooth)
     nms = _non_max_suppression(magnitude, angle)
@@ -247,7 +217,7 @@ def _pad_binary(mask: np.ndarray, ksize: int, pad_val: int) -> np.ndarray:
 
 
 def erode_scratch(mask: np.ndarray, ksize: int = 5) -> np.ndarray:
-    """Erosao morfologica binaria (elemento estruturante quadrado ksize x ksize)."""
+    """Erosao morfologica binaria."""
     binary = (mask > 0).astype(np.uint8) * 255
     padded = _pad_binary(binary, ksize, pad_val=255)
     windows = sliding_window_view(padded, (ksize, ksize))
@@ -255,7 +225,7 @@ def erode_scratch(mask: np.ndarray, ksize: int = 5) -> np.ndarray:
 
 
 def dilate_scratch(mask: np.ndarray, ksize: int = 5) -> np.ndarray:
-    """Dilatacao morfologica binaria (elemento estruturante quadrado ksize x ksize)."""
+    """Dilatacao morfologica binaria."""
     binary = (mask > 0).astype(np.uint8) * 255
     padded = _pad_binary(binary, ksize, pad_val=0)
     windows = sliding_window_view(padded, (ksize, ksize))
@@ -263,10 +233,35 @@ def dilate_scratch(mask: np.ndarray, ksize: int = 5) -> np.ndarray:
 
 
 def opening_scratch(mask: np.ndarray, ksize: int = 5) -> np.ndarray:
-    """Abertura morfologica (erosao seguida de dilatacao) para remover pequenos ruidos."""
+    """Abertura morfologica (erosao seguida de dilatacao)."""
     return dilate_scratch(erode_scratch(mask, ksize=ksize), ksize=ksize)
 
 
 def closing_scratch(mask: np.ndarray, ksize: int = 5) -> np.ndarray:
-    """Fechamento morfologico (dilatacao seguida de erosao) para fechar lacunas."""
+    """Fechamento morfologico (dilatacao seguida de erosao)."""
     return erode_scratch(dilate_scratch(mask, ksize=ksize), ksize=ksize)
+
+
+def grayscale_dilate_scratch(gray: np.ndarray, ksize: int = 11) -> np.ndarray:
+    """Dilatacao morfologica em escala de cinza (maximo na vizinhanca)."""
+    pad = ksize // 2
+    padded = np.pad(gray, ((pad, pad), (pad, pad)), mode="reflect")
+    windows = sliding_window_view(padded, (ksize, ksize))
+    return np.max(windows, axis=(-2, -1)).astype(np.uint8)
+
+
+def grayscale_erode_scratch(gray: np.ndarray, ksize: int = 11) -> np.ndarray:
+    """Erosao morfologica em escala de cinza (minimo na vizinhanca)."""
+    pad = ksize // 2
+    padded = np.pad(gray, ((pad, pad), (pad, pad)), mode="reflect")
+    windows = sliding_window_view(padded, (ksize, ksize))
+    return np.min(windows, axis=(-2, -1)).astype(np.uint8)
+
+
+def blackhat_scratch(gray: np.ndarray, ksize: int = 11) -> np.ndarray:
+    """
+    Transformada morfologica Black-Hat (fechamento em cinza menos imagem original).
+    Realca rachaduras, riscos e manchas escuras sobre superficies claras.
+    """
+    closed = grayscale_erode_scratch(grayscale_dilate_scratch(gray, ksize=ksize), ksize=ksize)
+    return np.clip(closed.astype(np.int16) - gray.astype(np.int16), 0, 255).astype(np.uint8)
